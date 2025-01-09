@@ -1,133 +1,94 @@
-import dotenv from 'dotenv';
-import { query, response } from 'express';
-dotenv.config();
-// import WEATHER_API_KEY from '/server/env'
+import { Router } from 'express';
+import fs from 'fs/promises';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+import WeatherService from '../service/weatherService.js';
 
-// TODO: Define an interface for the Coordinates object
-interface Coordinates {
-  latitude: number;
-  longitude: number;
+const router = Router();
+const searchHistoryPath = path.join(process.cwd(), 'searchHistory.json');
+
+// Define an interface for the history entry
+interface HistoryEntry {
+  id: string;
+  city: string;
+  timestamp: string;
 }
-interface WeatherResponse {
-  main: {
-    temp: number;
-    humidity: number;
+
+// Helper function to read search history
+async function readSearchHistory(): Promise<HistoryEntry[]> {
+  try {
+    const data = await fs.readFile(searchHistoryPath, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    // If the file does not exist, return an empty array
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+    throw error; // Rethrow if it's a different error
+  }
+}
+
+// Update the writeSearchHistory function to accept the correct type
+async function writeSearchHistory(history: HistoryEntry[]) {
+  await fs.writeFile(searchHistoryPath, JSON.stringify(history, null, 2), 'utf-8');
+}
+
+// Save a city to the search history
+async function saveCityToHistory(city: string) {
+  const history = await readSearchHistory();
+  const historyEntry: HistoryEntry = {
+    id: uuidv4(),
+    city: city,
+    timestamp: new Date().toISOString(),
   };
-  weather: { description: string }[];
-  wind: { speed: number };
+  history.push(historyEntry);
+  await writeSearchHistory(history);
 }
-// TODO: Define a class for the Weather object
-class Weather {
-  constructor(
-    public temperature: number,
-    public description: string,
-    public humidity: number,
-    public windspeed: number
-  ) { }
-}
-// TODO: Complete the WeatherService class
-class WeatherService {
-  // TODO: Define the baseURL, API key, and city name properties
-  private baseURL = 'https://api.openweathermap.org';
-  private apiKey = process.env.WEATHER_API_KEY || '';
-  private cityName = '';
 
-  // TODO: Create fetchLocationData method
-  private async fetchLocationData(query: string): Promise<Coordinates> {
-    if (!this.apiKey) {
-      throw new Error('API key is not defined');
-    } {
-      const url = `${this.baseURL}/geo/1.0/direct?q=${encodeURIComponent(query)}&limit=1&appid=${this.apiKey}`;
-      const response = await fetch(url);
-    }
-    if (!response.ok) {
-      throw new Error(`Location fetch failed for query "${query}". Status: ${response.status}`);
-    } {
+// POST: Retrieve weather data for a city and save to history
+router.post('/', async (req, res) => {
+  const { city } = req.body;
 
-      const data = await response.json();
-      if (data.length === 0) {
-        throw new Error(`No location found for query "${query}"`);
-      }
-      return data;
-    }
+  if (!city) {
+    return res.status(400).json({ error: 'Please enter a city' });
   }
-  // TODO: Create destructureLocationData method
-  private destructureLocationData(locationData: any[]): Coordinates {
-    return {
-      latitude: locationData[0].lat,
-      longitude: locationData[0].lon
-    }
+
+  try {
+    const weatherData = await WeatherService.getWeatherForCity(city);
+    await saveCityToHistory(city);
+    return res.status(200).json(weatherData);
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to fetch weather data' });
   }
-  // TODO: Create buildGeocodeQuery method
-  private buildGeocodeQuery(): string {
-    return `${this.baseURL}/geo/1.0/direct?q=${encodeURIComponent(this.cityName)}&limit=1&appid=${this.apiKey}`;
+});
+
+// GET: Retrieve search history
+router.get('/history', async (req, res) => {
+  try {
+    const history = await readSearchHistory();
+    return res.status(200).json(history);
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to retrieve search history' });
   }
-  // TODO: Create buildWeatherQuery method
-  private buildWeatherQuery(coordinates: Coordinates): string {
-    return `${this.baseURL}/data/2.5/weather?lat=${coordinates.latitude}&lon=${coordinates.longitude}&appid=${this.apiKey}&units=metric`;
-  }
-  // TODO: Create fetchAndDestructureLocationData method
-  private async fetchAndDestructureLocationData(): Promise<Coordinates> {
-    if (!this.cityName) {
-      throw new Error('City name is not defined');
+});
+
+// DELETE: Remove a city from search history
+router.delete('/history/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const history = await readSearchHistory();
+    const updatedHistory = history.filter(entry => entry.id !== id);
+
+    if (history.length === updatedHistory.length) {
+      return res.status(404).json({ error: 'City not found in history' });
     }
 
-    try {
-      const locationData = await this.fetchLocationData(this.cityName);
-      return this.destructureLocationData(locationData);
-    } catch (error) {
-      throw new Error(`Failed to fetch and destructure location data: ${error.message}`);
-    }
+    await writeSearchHistory(updatedHistory);
+    return res.status(200).json({ message: 'City removed from history' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to delete city from history' });
   }
-  // TODO: Create fetchWeatherData method
-  private async fetchWeatherData(coordinates: Coordinates): Promise<any> {
-    const url = this.buildWeatherQuery(coordinates);
-    const response = await fetch(url);
+});
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch weather data from ${url}. Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    return data;
-  }
-
-  // TODO: Build parseCurrentWeather method
-  private parseCurrentWeather(response: WeatherResponse): Weather {
-    return new Weather(
-      response.main.temp,
-      response.weather[0].description,
-      response.main.humidity,
-      response.wind.speed
-    );
-  }
-  // TODO: Complete buildForecastArray method
-  private buildForecastArray(currentWeather: Weather, weatherData: any[]): Weather[] {
-    return weatherData.map((data) => {
-      new Weather(
-        data.main.temp,
-        data.weather[0].description,
-        data.main.humidity,
-        data.wind.speed
-    })
-  }
-  // TODO: Complete getWeatherForCity method
-  async getWeatherForCity(city: string): Promise<Weather> {
-    if (!city) {
-      throw new Error('City name cannot be empty');
-    } {
-
-      try {
-        const coordinates = await this.fetchAndDestructureLocationData();
-        const weatherData = await this.fetchWeatherData(coordinates);
-        return this.parseCurrentWeather(weatherData);
-      } catch (error) {
-        throw new Error(`Failed to get weather data for city "${city}": ${error.message}`);
-      }
-    }
-  }
-
-export default new WeatherService();
-
-
+export default router;
